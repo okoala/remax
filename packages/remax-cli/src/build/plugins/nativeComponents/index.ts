@@ -13,7 +13,11 @@ import jsHelper, { getJsHelpers } from './jsHelper';
 import { isNativeComponent, isPluginComponent, getSourcePath } from './util';
 import winPath from '../../../winPath';
 import usingComponents from './usingComponents';
-import { getNativeComponents, clear } from './babelPlugin';
+import {
+  getNativeComponents,
+  clear as clearNativeComponents,
+} from './babelPlugin';
+import { clear } from '../components';
 
 const getFiles = () => [
   ...getcssPaths(),
@@ -95,6 +99,10 @@ export default (options: RemaxOptions, adapter: Adapter): Plugin => {
       };
     },
     watchChange(id) {
+      clearNativeComponents(id);
+
+      // 暂时把 rebuild 清理放在这里
+      // TODO: 后续可把 components 和 nativeComponents 的 babelPlugin 放在一起收集
       clear(id);
     },
     generateBundle() {

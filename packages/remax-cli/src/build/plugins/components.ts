@@ -3,12 +3,14 @@ import * as PATH from 'path';
 import winPath from '../../winPath';
 import fs from 'fs';
 import { NodePath } from '@babel/traverse';
-import { kebabCase } from 'lodash';
+import { kebabCase, union } from 'lodash';
 import { Adapter } from '../adapters';
+import { getDeleteComponentPaths } from './nativeComponents/util';
 
-interface Component {
+export interface Component {
   id: string;
   props: string[];
+  importer: string[];
 }
 
 interface ComponentCollection {
@@ -18,9 +20,31 @@ interface ComponentCollection {
 let components: ComponentCollection = {};
 let importedComponents: ComponentCollection = {};
 
-function clear() {
-  components = {};
-  importedComponents = {};
+export function clear(id?: string) {
+  if (id === undefined) {
+    components = {};
+    importedComponents = {};
+    return;
+  }
+
+  const componentPaths = getDeleteComponentPaths(id, components);
+
+  const importedComponentPaths = getDeleteComponentPaths(
+    id,
+    importedComponents
+  );
+
+  if (!componentPaths.length && !importedComponentPaths.length) {
+    return;
+  }
+
+  for (const path of componentPaths) {
+    delete components[path];
+  }
+
+  for (const path of importedComponentPaths) {
+    delete importedComponents[path];
+  }
 }
 
 function addToComponentCollection(
@@ -29,19 +53,17 @@ function addToComponentCollection(
 ) {
   if (!componentCollection[component.id]) {
     componentCollection[component.id] = component;
+    return;
   }
 
-  component.props.forEach(prop => {
-    if (
-      componentCollection[component.id].props.findIndex(
-        item => item === prop
-      ) !== -1
-    ) {
-      return;
-    }
-
-    componentCollection[component.id].props.push(prop);
-  });
+  componentCollection[component.id].props = union(
+    componentCollection[component.id].props,
+    component.props
+  );
+  componentCollection[component.id].importer = union(
+    componentCollection[component.id].importer,
+    component.importer
+  );
 }
 
 function shouldRegisterAllProps(node?: t.JSXElement) {
@@ -58,12 +80,19 @@ function shouldRegisterAllProps(node?: t.JSXElement) {
   return false;
 }
 
-function registerComponent(
-  componentName: string,
-  componentCollection: ComponentCollection,
-  adapter: Adapter,
-  node?: t.JSXElement
-) {
+function registerComponent({
+  componentName,
+  componentCollection,
+  adapter,
+  node,
+  importer = [],
+}: {
+  componentName: string;
+  componentCollection: ComponentCollection;
+  adapter: Adapter;
+  node?: t.JSXElement;
+  importer?: string[];
+}) {
   if (componentName === 'swiper-item') {
     return;
   }
@@ -102,11 +131,12 @@ function registerComponent(
 
   const props = usedProps
     .filter(Boolean)
-    .map(prop => adapter.getNativePropName(prop, true, true));
+    .map(prop => adapter.getNativePropName(prop, false, true));
 
   const component = {
     id: componentName,
     props,
+    importer,
   };
 
   addToComponentCollection(component, componentCollection);
@@ -117,7 +147,7 @@ export default (adapter: Adapter) => {
 
   return () => ({
     visitor: {
-      ImportDeclaration(path: NodePath) {
+      ImportDeclaration(path: NodePath, state: any) {
         const node = path.node as t.ImportDeclaration;
 
         if (!node.source.value.startsWith('remax/')) {
@@ -128,11 +158,16 @@ export default (adapter: Adapter) => {
           if (t.isImportSpecifier(specifier)) {
             const componentName = specifier.imported.name;
             const id = kebabCase(componentName);
-            registerComponent(id, importedComponents, adapter);
+            registerComponent({
+              componentName: id,
+              componentCollection: importedComponents,
+              adapter,
+              importer: [state.file.opts.filename],
+            });
           }
         });
       },
-      JSXElement(path: NodePath) {
+      JSXElement(path: NodePath, state: any) {
         const node = path.node as t.JSXElement;
         if (t.isJSXIdentifier(node.openingElement.name)) {
           const tagName = node.openingElement.name.name;
@@ -157,7 +192,13 @@ export default (adapter: Adapter) => {
           const componentName = componentPath.node.imported.name;
           const id = kebabCase(componentName);
 
-          registerComponent(id, components, adapter, node);
+          registerComponent({
+            componentName: id,
+            componentCollection: components,
+            adapter,
+            node,
+            importer: [state.file.opts.filename],
+          });
         }
       },
     },
@@ -171,7 +212,11 @@ function getAlipayComponents(adapter: Adapter) {
   const files = fs.readdirSync(DIR_PATH);
   files.forEach(file => {
     const name = PATH.basename(file).replace(PATH.extname(file), '');
-    registerComponent(name, components, adapter);
+    registerComponent({
+      componentName: name,
+      componentCollection: components,
+      adapter,
+    });
   });
 
   return Object.values(components);
